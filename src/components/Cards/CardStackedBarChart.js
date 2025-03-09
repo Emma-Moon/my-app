@@ -4,6 +4,8 @@ import Chart from "chart.js";
 export default function Coverage() {
   const [config, setConfig] = useState();
   const ref = useRef(null);
+  const [arrayWithSectionName, setArray] = useState([]);
+  const [arrayWithParantName, setNewArray] = useState([]);
   const url = '/api/index.php?/api/v2/get_cases/1';
   let autoCases = [];
   let nonAutoCases = [];
@@ -22,6 +24,59 @@ export default function Coverage() {
       count: sectionCount[sectionId]
     }));
   };
+  async function fetchSectionData(sectionId) {
+    const url = '/api/index.php?/api/v2/get_section/' + sectionId;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+      }
+    })
+    return response.json();
+  }
+  async function processSectionsInParallel(data) { // parent id가 있으면 그걸로 통일하기
+    // 각 section에 대해 API 호출을 병렬로 진행
+    const resultPromises = data.map(async (item) => {
+      const count = item.count;
+      const nonAutoCount = item.nonAutoCount;
+      const response = await fetchSectionData(item.sectionId); // section별 데이터 가져오기
+      return {
+        sectionId: response.parent_id ? response.parent_id : response.id,
+        name: response.name,
+        count: count,
+        nonAutoCount: nonAutoCount
+      }
+    });
+    // 모든 API 호출이 완료된 후 결과 반환
+    return Promise.all(resultPromises);
+  }
+  async function fetchParentSectionData(sectionId) {
+    const url = '/api/index.php?/api/v2/get_section/' + sectionId;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+      }
+    })
+    return response.json();
+  }
+  async function processGetParentSectionNamesInParallel(data) {
+    // 각 section에 대해 API 호출을 병렬로 진행
+    let resultPromises = [];
+    if (Array.isArray(data)) {
+      resultPromises = data.map(async (item) => {
+        const autoCount = item.autoCount;
+        const nonAutoCount = item.nonAutoCount;
+        const response = await fetchParentSectionData(item.sectionId); // section별 데이터 가져오기
+        return {
+          sectionId: response.id,
+          name: response.name,
+          autoCount: autoCount,
+          nonAutoCount: nonAutoCount
+        }
+      });
+    }
+    // 모든 API 호출이 완료된 후 결과 반환
+    return Promise.all(resultPromises);
+  }
   React.useEffect(async () => {
     const data = await (await fetch(
             url,
@@ -40,60 +95,62 @@ export default function Coverage() {
     });
     const autoList = countIdsBySection(autoCases);
     const nonAutoList = countIdsBySection(nonAutoCases);
+    // 배열 2개 합치기
+    nonAutoList.forEach(item => {
+      const existing = autoList.find(r => r.sectionId === item.sectionId);
+      if (existing) {
+        existing.nonAutoCount = item.count;
+      } else {
+        autoList.push({ sectionId: item.sectionId, autoCount: 0, nonAutoCount: item.count });
+      }
+    });
     console.log("auto", autoList);
     console.log("nonAuto", nonAutoList);
     processSectionsInParallel(autoList).then((newArray) => {
-      const countSectionIds = (data) => { // TODO : 여기서부터 다시~~
-        return data.reduce((acc, item) => {
-          const existingSectionId = acc.find(entry => entry.sectionId === item.sectionId);
-          if (existingSectionId) {
-            existingSectionId.count += item.count;
-          } else {
-            acc.push({ sectionId: item.sectionId, name: item.name, count: item.count });
-          }
-          return acc;
-        }, []);
-      };
-      console.log(countSectionIds);
+      console.log("newArray", newArray);
+      const arrayWithParentId = newArray.reduce((acc, item) => {
+        const existingSectionId = acc.find(entry => entry.sectionId === item.sectionId);
+        if (existingSectionId) {
+          existingSectionId.autoCount += (item.count ? item.count : 0);
+          existingSectionId.nonAutoCount += (item.nonAutoCount ? item.nonAutoCount : 0);
+        } else {
+          acc.push({ sectionId: item.sectionId, name: item.name, autoCount: item.count !== undefined ? item.count : 0,
+              nonAutoCount: item.nonAutoCount !== undefined ? item.nonAutoCount : 0 });
+        }
+        return acc;
+      }, []);
+      console.log("arrayWithParentId", arrayWithParentId);
+      setArray(arrayWithParentId);
     }).catch(error => {
       console.error("Error during API calls:", error);
     });
   }, []);
-  async function fetchSectionData(sectionId) {
-    const url = '/api/index.php?/api/v2/get_section/' + sectionId;
-    const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-      }
-    })
-    return response.json();
-  }
-  async function processSectionsInParallel(data) {
-    // 각 section에 대해 API 호출을 병렬로 진행
-    const resultPromises = data.map(async (item) => {
-      const count = item.count;
-      const response = await fetchSectionData(item.sectionId); // section별 데이터 가져오기
-      return {
-        sectionId: response.parent_id ? response.parent_id : response.id,
-        name: response.name,
-        count: count,
-      }
+  React.useEffect(() => {
+    processGetParentSectionNamesInParallel(arrayWithSectionName).then((newArray) => {
+      const arrayWithParentName = newArray.reduce((acc, item) => {
+        acc.push({ sectionId: item.sectionId, name: item.name, autoCount: item.autoCount, nonAutoCount: item.nonAutoCount });
+        return acc;
+      }, []).sort((a, b) => b.autoCount - a.autoCount);
+      console.log("arrayWithParentName", arrayWithParentName);
+      setNewArray(arrayWithParentName);
+    }).catch(error => {
+      console.error("Error during API calls:", error);
     });
-    // 모든 API 호출이 완료된 후 결과 반환
-    return Promise.all(resultPromises);
-  }
-  React.useEffect(async () => {
-    // TODO : 섹션별로 size 및 자동화 비율 확인, 섹션별로 모아서 리스트를 만들고, 섹션별로 다시 get_section/{section_id} 호출해서 이름, 비율 넣어서
+  }, [arrayWithSectionName]);
+  React.useEffect(() => {
+    const sectionName = arrayWithParantName.map(item => item.name);
+    const autoCount = arrayWithParantName.map(item => item.autoCount);
+    const nonAutoCount = arrayWithParantName.map(item => item.nonAutoCount);
     let config = {
       type: "bar",
       data: {
-        labels: ["section1", "section2"],
+        labels: sectionName,
         datasets: [
           {
             label: "Automated",
             backgroundColor: "#ed64a6",
             borderColor: "#ed64a6",
-            data: [1, 2, 3],
+            data: autoCount,
             fill: false,
             barThickness: 20,
           },
@@ -101,7 +158,7 @@ export default function Coverage() {
             label: "To Be Automated",
             backgroundColor: "#808080",
             borderColor: "#808080",
-            data: [4, 5, 6],
+            data: nonAutoCount,
             fill: false,
             barThickness: 20,
           },
@@ -128,10 +185,10 @@ export default function Coverage() {
         scales: {
           xAxes: [
             {
-              display: false,
+              display: true,
               scaleLabel: {
-                display: true,
-                labelString: "Month",
+                display: false,
+                labelString: sectionName,
                 stack: true,
               },
               gridLines: {
@@ -169,7 +226,7 @@ export default function Coverage() {
       },
     };
     setConfig(config);
-  }, []);
+  }, [arrayWithParantName]);
   useEffect(() => {
     if (config && ref.current) {
       new Chart(ref.current, config);
@@ -182,7 +239,7 @@ export default function Coverage() {
             <div className="flex flex-wrap items-center">
               <div className="relative w-full max-w-full flex-grow flex-1">
                 <h2 className="text-blueGray-700 text-xl font-semibold">
-                  영역별 테스트 자동화율
+                  영역별 테스트 자동화 현황
                 </h2>
               </div>
             </div>
